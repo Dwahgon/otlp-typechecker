@@ -28,7 +28,7 @@ lingDef = emptyDef
            ,L.identStart   = letter
            ,L.identLetter  = letter
            ,L.reservedNames = ["let", "in", "if", "then", "else", "case", "of"]
-           ,L.reservedOpNames = ["="]
+           ,L.reservedOpNames = ["=", "->"]
           }  
 
 lexical = L.makeTokenParser lingDef
@@ -78,7 +78,9 @@ parsePair = do symbol "("
                symbol ")"
                return (Pair e e')
 
-parsePatExpr
+parsePat = 
+
+parsePatExpr = do pat <- 
 
 parseCase = do reserved "case"
                e <- expr
