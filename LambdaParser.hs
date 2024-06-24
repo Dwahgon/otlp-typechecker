@@ -51,9 +51,10 @@ parseExpr = runParser expr [] "lambda-calculus"
 expr :: Parsec String u Expr
 expr = chainl1 parseNonApp $ return $ App
 
-isIdentifier (x:xs) = not (isUpper x)
-varOrConst = do i <- identifier
-                return (if (isIdentifier i) then (Var i) else (Const i))
+isConst (x:xs) = isUpper x
+isVar (x:xs) = not (isUpper x)
+parseVarOrConst = do i <- identifier
+                     return (if (isVar i) then (Var i) else (Const i))
 
 lamAbs = do symbol "\\"
             i <- identifier
@@ -95,7 +96,7 @@ parsePair = do symbol "("
 
 parsePatCons = do c <- identifier
                   p <- parsePats
-                  return (PCon c p)
+                  return (if isConst c then PCon c p else undefined)
 
 parsePats = try (do {p <- parsePat; ps <- parsePats; return (p:ps);})
             <|> (do {return ([]);})
@@ -149,7 +150,7 @@ parseNonApp = try parsePair    -- (E, E)
               <|> lamAbs       -- \x.E
               <|> parseCase    -- case E of {LPat}
               <|> parseExprLit -- literal
-              <|> varOrConst   -- x
+              <|> parseVarOrConst   -- x
 
 ----------------------------------------
 
@@ -214,10 +215,12 @@ instance Subs SimpleType where
                        Just t  -> t
                        Nothing -> TVar u
   apply s (TArr l r) =  (TArr (apply s l) (apply s r))
+  apply s (TCon t) = TCon t
 
 
   tv (TVar u)  = [u]
   tv (TArr l r) = tv l `union` tv r
+  tv (TCon t) = [t]
 
 
 instance Subs a => Subs [a] where
@@ -234,11 +237,18 @@ varBind u t | t == TVar u   = Just []
             | u `elem` tv t = Nothing
             | otherwise     = Just [(u, t)]
 
+
 mgu (TArr l r,  TArr l' r') = do s1 <- mgu (l,l')
                                  s2 <- mgu ((apply s1 r) ,  (apply s1 r'))
                                  return (s2 @@ s1)
 mgu (t,        TVar u   )   =  varBind u t
 mgu (TVar u,   t        )   =  varBind u t
+mgu (TCon tc1, TCon tc2)
+   | tc1 == tc2 = Just []
+   | otherwise = Nothing
+mgu (TApp l r,  TApp l' r') = do s1 <- mgu (l,l')
+                                 s2 <- mgu ((apply s1 r) ,  (apply s1 r'))
+                                 return (s2 @@ s1)
 
 unify t t' =  case mgu (t,t') of
     Nothing -> error ("\ntrying to unify:\n" ++ (show t) ++ "\nand\n" ++
@@ -263,6 +273,26 @@ tiExpr g (App e e') = do (t, s1) <- tiExpr g e
 tiExpr g (Lam i e) = do b <- freshVar
                         (t, s)  <- tiExpr (g/+/[i:>:b]) e
                         return (apply s (b --> t), s)
+tiExpr g (Lit (LitInt i)) = do return (TCon "Int", [])
+tiExpr g (Lit (LitBool i)) = do return (TCon "Bool", [])
+tiExpr g (Const c) = do return (TCon c, [])
+tiExpr g (If c l r) = do (t, s1) <- tiExpr g c
+                         let s' = unify t (TCon "Bool")
+                         (t', s2) <- tiExpr (apply (s1@@s') g) l
+                         (t'', s3) <- tiExpr (apply (s2@@s1@@s') g) r
+                         let s'' = unify t' t''
+                         return (t', s1@@s2@@s3@@s'@@s'')
+tiExpr g (Let (i, e) e') = do (t, s1) <- tiExpr g e
+                              (t', s2) <- tiExpr ((apply s1 g) /+/ [i:>:t]) e'
+                              return (t', s1 @@ s2)
+
+-- case x of
+--    Just a -> [a]
+--    Nothing -> []
+-- unificar x just a e nothing
+-- unificar [a] []
+-- retornar o tipo [a] []
+
 -- ftv (TVar) = 
 -- tiExpr g (Let (i, e) e') = do (t, s1)  <- tiExpr g e
 --                               (t', s2) <- tiExpr (apply s1 (g/+/[i:>:])) e'
