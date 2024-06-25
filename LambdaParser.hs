@@ -2,7 +2,7 @@ import Text.Parsec
 import qualified Text.Parsec.Token as L
 import Text.Parsec.Language (emptyDef)
 import Data.Char
-import Data.List(nub, intersect, union, (\\))
+import Data.List(nub, intersect, union, (\\), elemIndex)
 
 type Id = String
 
@@ -217,7 +217,7 @@ instance Subs SimpleType where
   apply s (TArr l r) =  (TArr (apply s l) (apply s r))
   apply s (TApp l r) = TApp (apply s l) (apply s r)
   apply s (TCon t) = TCon t
-  apply s (TGen i) = case lookup ("Gen" ++ show i) s of
+  apply s (TGen i) = case lookup ("a" ++ show i) s of
                        Just t -> t
                        Nothing -> TGen i
 
@@ -244,12 +244,10 @@ varBind u t | t == TVar u   = Just []
             | otherwise     = Just [(u, t)]
 
 genBind i t | t == TGen i = Just []
-            | ("Gen" ++ show i) `elem` tv t = Nothing
-            | otherwise = Just [("Gen" ++ show i, t)]
+            | ("a" ++ show i) `elem` tv t = Nothing
+            | otherwise = Just [("a" ++ show i, t)]
 
-mgu (TArr l r,  TArr l' r') = do s1 <- mgu (l,l')
-                                 s2 <- mgu ((apply s1 r) ,  (apply s1 r'))
-                                 return (s2 @@ s1)
+
 mgu (t,        TVar u   )   =  varBind u t
 mgu (TVar u,   t        )   =  varBind u t
 mgu (TCon tc1, TCon tc2)
@@ -260,26 +258,54 @@ mgu (t, TGen i) = genBind i t
 mgu (TApp l r,  TApp l' r') = do s1 <- mgu (l,l')
                                  s2 <- mgu ((apply s1 r) ,  (apply s1 r'))
                                  return (s2 @@ s1)
+mgu (TArr l r,  TArr l' r') = do s1 <- mgu (l,l')
+                                 s2 <- mgu ((apply s1 r) ,  (apply s1 r'))
+                                 return (s2 @@ s1)
+
+quantify l (TVar i) = case i `elemIndex` l of
+   Nothing -> TVar i
+   Just i' -> TGen i'
+quantify l (TArr a b) = TArr (quantify l a) (quantify l b)
+quantify l (TApp a b) = TApp (quantify l a) (quantify l b)
+quantify l t = t
 
 unify t t' =  case mgu (t,t') of
     Nothing -> error ("\ntrying to unify:\n" ++ (show t) ++ "\nand\n" ++
                       (show t')++"\n")
     Just s  -> s
 
-close g t = zipWith (\i n -> i :>: TGen n) (tv t \\ tv g) [1..]
-
 iniCont = ["(,)" :>: (TArr (TGen 0) (TArr (TGen 1) (TApp (TApp (TCon "(,)") (TGen 0))
             (TGen 1)))), "True" :>: (TCon "Bool"), "False" :>: (TCon "Bool")]
 
-tiContext g i = if l /= [] then t else error ("Undefined: " ++ i ++ "\n")
+
+findTGens (TGen i) = [i]
+findTGens (TArr l r) = nub (findTGens l ++ findTGens r)
+findTGens (TApp l r) = findTGens (TArr l r)
+findTGens t = []
+
+tgenToFresh i = do b <- freshVar
+                   return ("a" ++ show i, b)
+
+tgensToFresh ([]) = return ([])
+tgensToFresh (x:xs) = do f <- tgenToFresh x
+                         fs <- tgensToFresh xs
+                         return (f:fs)
+
+instanceGens t = do fs <- tgensToFresh (findTGens t)
+                    return (apply fs t)
+
+tiContext g i = if l /= [] then instanceGens t else error ("Undefined: " ++ i ++ "\n")
    where
       l = dropWhile (\(i' :>: _) -> i /= i' ) g
       (_ :>: t) = head l
 
-tiExpr g (Lit (LitBool b)) = return (tiContext g (show b), []) -- True: Bool, False: Bool
-tiExpr g (Const c) = return (tiContext g c, []) --- Cons
-tiExpr g (Lit (LitInt i)) = do return (TCon "Int", []) -- 123: Int
-tiExpr g (Var i) = return (tiContext g i, []) -- x: t
+tiExpr g (Lit (LitBool b)) = do t <- tiContext g (show b)
+                                return (t, []) -- True: Bool, False: Bool
+tiExpr g (Const c) = do t <- tiContext g c
+                        return (t, []) --- Cons
+tiExpr g (Var i) = do t <- tiContext g i
+                      return (t, []) -- x: t
+tiExpr g (Lit (LitInt i)) = return (TCon "Int", []) -- 123: Int
 tiExpr g (App e e') = do (t, s1) <- tiExpr g e -- e e': t
                          (t', s2) <- tiExpr (apply s1 g) e'
                          b <- freshVar
@@ -296,9 +322,11 @@ tiExpr g (If c l r) = do (t, s1) <- tiExpr g c
                          return (apply s'' t', s1@@s2@@s3@@s'@@s'')
 tiExpr g (Let (i, e) e') = do (t, s1) <- tiExpr g e
                               let s1g = apply s1 g
-                              (t', s2) <- tiExpr (s1g /+/ (close s1g t) /+/ [i:>:t]) e'
+                              (t', s2) <- tiExpr (s1g /+/ [i:>:quantify (tv g \\ tv t) t]) e'
                               return (t', s1 @@ s2)
 
+
+-- \x.let f = (\y.(x,y)) in (f True, f 1)
 -- case x of
 --    Just a -> [a]
 --    Nothing -> []
