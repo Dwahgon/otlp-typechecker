@@ -3,6 +3,8 @@ import qualified Text.Parsec.Token as L
 import Text.Parsec.Language (emptyDef)
 import Data.Char
 import Data.List(nub, intersect, union, (\\), elemIndex)
+import Debug.Trace
+import Control.Monad
 
 type Id = String
 
@@ -11,7 +13,6 @@ data Literal = LitInt Integer | LitBool Bool deriving (Show, Eq)
 data Pat = PVar Id
     | PLit Literal
     | PCon Id [Pat]
-    | PPair Pat Pat
     deriving (Eq, Show)
 
 data Expr = Var Id
@@ -170,9 +171,10 @@ data Assump = Id :>: SimpleType deriving (Eq, Show)
 instance Show SimpleType where
    show (TVar i) = i
    show (TCon i) = i
-   show (TGen i) = show i
+   show (TGen i) = "a" ++ show i
    show (TArr (TVar i) t) = i++" -> "++show t
    show (TArr t t') = "("++show t++")"++"->"++show t'
+   show (TApp (TApp (TCon "(,)") a) b) = "(" ++ show a ++ ", " ++ show b ++ ")"
    show (TApp (TVar i) t') = i ++ " " ++ show t'
    show (TApp (TCon i) t') = i ++ " " ++ show t'
    show (TApp t t') = "(" ++ show t ++ ") " ++ show t'
@@ -262,12 +264,14 @@ mgu (TArr l r,  TArr l' r') = do s1 <- mgu (l,l')
                                  s2 <- mgu ((apply s1 r) ,  (apply s1 r'))
                                  return (s2 @@ s1)
 
+-- This function replaces all TVars in a SimpleType with TGens if 'l' contains TVar
 quantify l (TVar i) = case i `elemIndex` l of
    Nothing -> TVar i
    Just i' -> TGen i'
 quantify l (TArr a b) = TArr (quantify l a) (quantify l b)
 quantify l (TApp a b) = TApp (quantify l a) (quantify l b)
 quantify l t = t
+-- quantify' l t = trace ("quantify l=" ++ show l ++ " t=" ++ show t ++ " = " ++ show (quantify l t)) (quantify l t)
 
 unify t t' =  case mgu (t,t') of
     Nothing -> error ("\ntrying to unify:\n" ++ (show t) ++ "\nand\n" ++
@@ -314,17 +318,59 @@ tiExpr g (App e e') = do (t, s1) <- tiExpr g e -- e e': t
 tiExpr g (Lam i e) = do b <- freshVar -- \x.e: b->t
                         (t, s)  <- tiExpr (g/+/[i:>:b]) e
                         return (apply s (b --> t), s)
+-- tiExpr g (If c l r) = trace ("let g=" ++ show g ++ " i=" ++ show i ++ " e=" ++ show e ++ " e'" ++ show e') (do (t, s1) <- tiExpr g c
+--                                                                                                                let s' = unify t (TCon "Bool")
+--                                                                                                                (t', s2) <- tiExpr (apply (s1@@s') g) l
+--                                                                                                                (t'', s3) <- tiExpr (apply (s2@@s1@@s') g) r
+--                                                                                                                let s'' = unify (apply s3 t') t''
+--                                                                                                                return (apply s'' t', s1@@s2@@s3@@s'@@s''))
 tiExpr g (If c l r) = do (t, s1) <- tiExpr g c
                          let s' = unify t (TCon "Bool")
                          (t', s2) <- tiExpr (apply (s1@@s') g) l
                          (t'', s3) <- tiExpr (apply (s2@@s1@@s') g) r
                          let s'' = unify (apply s3 t') t''
                          return (apply s'' t', s1@@s2@@s3@@s'@@s'')
+-- tiExpr g (Let (i, e) e') = trace ("let g=" ++ show g ++ " i=" ++ show i ++ " e=" ++ show e ++ " e'" ++ show e') (do (t, s1) <- tiExpr g e
+--                                                                                                                     let s1g = apply s1 g
+--                                                                                                                     (t', s2) <- tiExpr (s1g /+/ [i:>:quantify' (tv s1g \\ tv t) t]) e'
+--                                                                                                                     return (t', s1 @@ s2))
 tiExpr g (Let (i, e) e') = do (t, s1) <- tiExpr g e
                               let s1g = apply s1 g
-                              (t', s2) <- tiExpr (s1g /+/ [i:>:quantify (tv g \\ tv t) t]) e'
+                              (t', s2) <- tiExpr (s1g /+/ [i:>:quantify (tv t \\ tv s1g) t]) e'
                               return (t', s1 @@ s2)
+tiExpr g (Case e ps) = do (t1, s1) <- tiExpr g e
+                          tips <- tiPSExpr (apply s1 g) ps
+                          let (tsp, tse) = unzip tips -- ([(patternType, patternSubst)], [(expressionType, patternSubst)]) 
+                          let (tps, sps) = unzip tsp -- ([patternType], [patternSubst])
+                          let (tes, ses) = unzip tse -- ([expressionType], [expressionSubst])
+                          let ss = foldl1 (@@) ([s1] ++ sps ++ ses)
+                          let sp = unifyAll ss tps
+                          let se = unifyAll (sp@@ss) tes
+                          return (apply se (head tes), se)
 
+unifyAll s [] = s
+unifyAll s [t] = s
+unifyAll s (t1:t2:ts) = do
+                        let s1 = unify (apply s t1) t2
+                        unifyAll s1 (t2:ts)
+
+-- PVar Id
+-- PLit Literal
+-- PCon Id [Pat]
+
+tiPExpr g (PVar i) = do t <- tiContext g i
+                        return (t, [])
+tiPExpr g (PLit (LitBool b)) = do t <- tiContext g (show b)
+                                  return (t, [])
+tiPExpr g (PLit (LitInt i)) = return (TCon "Int", [])
+tiPExpr g (PCon i ps) = do t <- tiContext g i
+                           (ts, ss) <- mapAndUnzipM (tiPExpr g) ps
+                           return (foldl1 TApp (t:ts), foldr1 (@@) ss)
+tiPSExpr g [] = return ([])
+tiPSExpr g ((p, e):xs) = do (t1, s1) <- tiPExpr g p
+                            (t2, s2) <- tiExpr (apply s1 g) e
+                            ts <- tiPSExpr (apply (s1@@s2) g) xs
+                            return (((apply s2 t1, s1), (t2, s2)):ts)
 
 -- \x.let f = (\y.(x,y)) in (f True, f 1)
 -- case x of
