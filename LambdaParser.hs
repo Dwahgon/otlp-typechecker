@@ -94,12 +94,18 @@ parsePair = do symbol "("
                symbol ")"
                return (App (App (Const "(,)") e) e')
 
-parsePatCons = do c <- identifier
-                  p <- parsePats
-                  return (if isConst c then PCon c p else undefined)
-
 parsePats = try (do {p <- parsePat; ps <- parsePats; return (p:ps);})
             <|> (do {return ([]);})
+
+parsePatVarOrCons = do c <- identifier
+                       if isConst c then
+                        do p <- parsePats
+                           return (PCon c p)
+                       else return (PVar c)
+
+-- parsePatCons = do c <- identifier
+--                   p <- parsePats
+--                   return (if isConst c then PCon c p else undefined)
 
 
 parsePatPair = do symbol "("
@@ -109,8 +115,8 @@ parsePatPair = do symbol "("
                   symbol ")"
                   return (PCon "(,)" [p, p'])
 
-parsePatVar = do i <- identifier
-                 return (PVar i)
+-- parsePatVar = do i <- identifier
+--                  return (PVar i)
 
 parsePatLit = do l <- parseLit
                  return (PLit l)
@@ -138,9 +144,8 @@ parseCase = do reserved "case"
 parseExprLit = do l <- parseLit
                   return (Lit l)
 
-parsePat = parsePatCons         -- Cons Pats
-           <|> parsePatPair     -- (Pat, Pat)
-           <|> parsePatVar      -- x
+parsePat = try parsePatPair     -- (Pat, Pat)
+           <|> parsePatVarOrCons
            <|> parsePatLit      -- lit
 
 parseNonApp = try parsePair    -- (E, E)
@@ -263,6 +268,7 @@ mgu (TApp l r,  TApp l' r') = do s1 <- mgu (l,l')
 mgu (TArr l r,  TArr l' r') = do s1 <- mgu (l,l')
                                  s2 <- mgu ((apply s1 r) ,  (apply s1 r'))
                                  return (s2 @@ s1)
+mgu (t, u) = Nothing
 
 -- This function replaces all TVars in a SimpleType with TGens if 'l' contains TVar
 quantify l (TVar i) = case i `elemIndex` l of
@@ -340,19 +346,17 @@ tiExpr g (Let (i, e) e') = do (t, s1) <- tiExpr g e
                               return (t', s1 @@ s2)
 tiExpr g (Case e ps) = do (t1, s1) <- tiExpr g e
                           tips <- tiPSExpr (apply s1 g) ps
-                          let (tsp, tse) = unzip tips -- ([(patternType, patternSubst)], [(expressionType, patternSubst)]) 
+                          let (tsp, tse) = unzip tips -- ([(patternType, patternSubst)], [(expressionType, expressionSubst)])
                           let (tps, sps) = unzip tsp -- ([patternType], [patternSubst])
                           let (tes, ses) = unzip tse -- ([expressionType], [expressionSubst])
                           let ss = foldl1 (@@) ([s1] ++ sps ++ ses)
-                          let sp = unifyAll ss tps
+                          let sp = unifyAll ss (t1:tps)
                           let se = unifyAll (sp@@ss) tes
                           return (apply se (head tes), se)
 
 unifyAll s [] = s
 unifyAll s [t] = s
-unifyAll s (t1:t2:ts) = do
-                        let s1 = unify (apply s t1) t2
-                        unifyAll s1 (t2:ts)
+unifyAll s (t1:t2:ts) = unifyAll (unify (apply s t1) t2) (t2:ts)
 
 -- PVar Id
 -- PLit Literal
@@ -379,6 +383,9 @@ tiPSExpr g ((p, e):xs) = do (t1, s1) <- tiPExpr g p
 -- unificar x just a e nothing
 -- unificar [a] []
 -- retornar o tipo [a] []
+-- \x.let f = (\y.(x,y)) in (case f True of {(x, True) -> 1})
+
+-- case 1 of {False -> 1; 2 -> 2}
 
 infer e = runTI (tiExpr iniCont e)
 
