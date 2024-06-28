@@ -345,36 +345,40 @@ tiExpr g (Let (i, e) e') = do (t, s1) <- tiExpr g e
                               (t', s2) <- tiExpr (s1g /+/ [i:>:quantify (tv t \\ tv s1g) t]) e'
                               return (t', s1 @@ s2)
 tiExpr g (Case e ps) = do (t1, s1) <- tiExpr g e
-                          tips <- tiPSExpr (apply s1 g) ps
-                          let (tsp, tse) = unzip tips -- ([(patternType, patternSubst)], [(expressionType, expressionSubst)])
-                          let (tps, sps) = unzip tsp -- ([patternType], [patternSubst])
-                          let (tes, ses) = unzip tse -- ([expressionType], [expressionSubst])
-                          let ss = foldl1 (@@) ([s1] ++ sps ++ ses)
+                          tips <- tiPSExpr (apply s1 g) ps -- [(patternType, (expressiontype, subst))]
+                          let (tps, tse) = unzip tips --([patternType], [(expressionType, subst)])
+                          let (tes, ses) = unzip tse -- ([expression], [subst])
+                          let ss = foldl1 (@@) ([s1] ++ ses)
                           let sp = unifyAll ss (t1:tps)
                           let se = unifyAll (sp@@ss) tes
                           return (apply se (head tes), se)
 
 unifyAll s [] = s
 unifyAll s [t] = s
-unifyAll s (t1:t2:ts) = unifyAll (unify (apply s t1) t2) (t2:ts)
+unifyAll s (t1:t2:ts) = unifyAll (s @@ (unify t1 t2)) (t2:ts)
 
 -- PVar Id
 -- PLit Literal
 -- PCon Id [Pat]
 
-tiPExpr g (PVar i) = do t <- tiContext g i
-                        return (t, [])
+tiPExpr g (PVar i) = do b <- freshVar
+                        return (b, g /+/ [i:>:b])
 tiPExpr g (PLit (LitBool b)) = do t <- tiContext g (show b)
-                                  return (t, [])
-tiPExpr g (PLit (LitInt i)) = return (TCon "Int", [])
-tiPExpr g (PCon i ps) = do t <- tiContext g i
-                           (ts, ss) <- mapAndUnzipM (tiPExpr g) ps
-                           return (foldl1 TApp (t:ts), foldr1 (@@) ss)
+                                  return (t, g)
+tiPExpr g (PLit (LitInt i)) = return (TCon "Int", g)
+tiPExpr g (PCon i ps) = do (ts, gs) <- mapAndUnzipM (tiPExpr g) ps
+                           let gt = g `union` (foldr1 `union` gs)
+                           t <- tiContext gt i
+                           b <- freshVar
+                           let s = unify t (foldr (-->) b ts)
+                           return (apply s t, gt)
+
 tiPSExpr g [] = return ([])
-tiPSExpr g ((p, e):xs) = do (t1, s1) <- tiPExpr g p
-                            (t2, s2) <- tiExpr (apply s1 g) e
-                            ts <- tiPSExpr (apply (s1@@s2) g) xs
-                            return (((apply s2 t1, s1), (t2, s2)):ts)
+tiPSExpr g ((p, e):xs) = do (t1, g') <- tiPExpr g p
+                            (t2, s) <- tiExpr g' e
+                            ts <- tiPSExpr (apply s g') xs
+                            return ((apply s t1, (t2, s)):ts)
+
 
 -- \x.let f = (\y.(x,y)) in (f True, f 1)
 -- case x of
@@ -383,8 +387,9 @@ tiPSExpr g ((p, e):xs) = do (t1, s1) <- tiPExpr g p
 -- unificar x just a e nothing
 -- unificar [a] []
 -- retornar o tipo [a] []
--- \x.let f = (\y.(x,y)) in (case f True of {(x, True) -> 1})
+-- (\x.let f = (\y.(x,y)) in (case f True of {(x, True) -> 1})) 3
 
+-- case 1 of {False -> 1; 2 -> 2}
 -- case 1 of {False -> 1; 2 -> 2}
 
 infer e = runTI (tiExpr iniCont e)
