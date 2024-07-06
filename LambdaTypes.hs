@@ -2,7 +2,7 @@ module LambdaTypes where
 
 type Id = String
 
-data Literal = LitInt Integer | LitBool Bool deriving (Show, Eq)
+data Literal = LitInt Integer | LitBool Bool | LitChar Char deriving (Show, Eq)
 
 data Pat = PVar Id
     | PLit Literal

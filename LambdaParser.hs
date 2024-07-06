@@ -48,7 +48,13 @@ parseLitBool = do b <- do {reserved "True"; return True} <|> do {reserved "False
 
 parseLitInt = do LitInt <$> integer
 
-parseLit = parseLitBool
+parseLitChar = do symbol "\'"
+                  l <- letter
+                  symbol "\'"
+                  return (LitChar l)
+
+parseLit = parseLitChar
+           <|> parseLitBool
            <|> parseLitInt
 
 parseLet = do reserved "let"

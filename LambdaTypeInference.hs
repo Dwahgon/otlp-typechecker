@@ -161,6 +161,7 @@ tiExpr g (Const c) = do t <- tiContext g c
 tiExpr g (Var i) = do t <- tiContext g i
                       return (t, []) -- x: t
 tiExpr g (Lit (LitInt i)) = return (TCon "Int", []) -- 123: Int
+tiExpr g (Lit (LitChar l)) = return (TCon "Char", []) -- 'c': Char
 tiExpr g (App e e') = do (t, s1) <- tiExpr g e -- e e': t
                          (t', s2) <- tiExpr (apply s1 g) e'
                          b <- freshVar
@@ -197,6 +198,7 @@ tiPExpr g (PVar i) = do b <- freshVar
 tiPExpr g (PLit (LitBool b)) = do t <- tiContext g (show b)
                                   return (t, g)
 tiPExpr g (PLit (LitInt i)) = return (TCon "Int", g)
+tiPExpr g (PLit (LitChar i)) = return (TCon "Char", g)
 tiPExpr g (PCon i ps) = do (ts, gs) <- mapAndUnzipM (tiPExpr g) ps
                            let gt = g /+/ foldr (/+/) [] gs
                            t <- tiContext gt i
